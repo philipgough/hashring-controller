@@ -1,0 +1,1 @@
+# thanos-receive-hashring-controller
