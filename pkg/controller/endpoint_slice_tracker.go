@@ -56,6 +56,60 @@ func newTracker(ttl *time.Duration, logger log.Logger) *tracker {
 	}
 }
 
+// saveOrMerge saves or merges an EndpointSlice into the cache
+func (t *tracker) saveOrMerge(eps *discoveryv1.EndpointSlice) error {
+	key, err := t.generateCacheKey(eps)
+	if err != nil {
+		return fmt.Errorf("saveOrMerge failed to generate cache key: %w", err)
+	}
+
+	updatedState, terminatingPods := t.toHashring(eps)
+	subKey := t.toSubKey(eps)
+
+	if t.saveInPlace(key, subKey) {
+		t.setState(key, subKey, updatedState)
+		return nil
+	}
+
+	// At this point we know the following is true:
+	// 1. we have seen this EndpointSlice for this Service before
+	// 2. we care about TTLs and we don't want to act on involuntary disruptions
+	// 3. we are going to mutate the state in some form or another so we need to lock
+	t.mut.Lock()
+	defer t.mut.Unlock()
+	existingStoredState, ok := t.state[key][subKey]
+	if !ok {
+		// this should never happen
+		return fmt.Errorf("saveOrMerge failed to find existing hashring for key %s and subKey %s", key, subKey)
+	}
+
+	// remove terminating Pods from the stored hashring
+	for _, hostname := range terminatingPods {
+		level.Info(t.logger).Log("msg", "evicting terminating endpoint from hashring",
+			"endpoint", hostname, "hashring", key, "subKey", subKey)
+		delete(existingStoredState.endpoints, hostname)
+	}
+
+	now := t.now()
+	for k, v := range existingStoredState.endpoints {
+		if v.Before(now) {
+			// check if the entry has been refreshed in this update
+			if _, ok := updatedState.endpoints[k]; !ok {
+				level.Info(t.logger).Log("msg", "evicting expired endpoint from hashring",
+					"endpoint", k, "hashring", key, "subKey", subKey)
+				delete(existingStoredState.endpoints, k)
+			}
+		}
+	}
+
+	// add/refresh our TTLs by merging back in our updates
+	for k, v := range updatedState.endpoints {
+		existingStoredState.endpoints[k] = v
+	}
+
+	return nil
+}
+
 func (t *tracker) deepCopyState() map[cacheKey]ownerRefTracker {
 	t.mut.RLock()
 	defer t.mut.RUnlock()
