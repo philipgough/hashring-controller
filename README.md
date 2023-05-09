@@ -1,1 +1,7 @@
-# thanos-receive-hashring-controller
+# hashring-controller
+
+
+
+# Testing
+
+Run tests with `make test`
