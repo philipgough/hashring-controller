@@ -110,6 +110,38 @@ func (t *tracker) saveOrMerge(eps *discoveryv1.EndpointSlice) error {
 	return nil
 }
 
+// evict evicts an EndpointSlice from the cache
+func (t *tracker) evict(eps *discoveryv1.EndpointSlice) (bool, error) {
+	key, err := t.generateCacheKey(eps)
+	if err != nil {
+		return false, fmt.Errorf("evict failed to generate cache key: %w", err)
+	}
+
+	t.mut.Lock()
+	defer t.mut.Unlock()
+
+	state, ok := t.state[key]
+	if !ok {
+		return false, nil
+	}
+
+	subKey := t.toSubKey(eps)
+	_, ok = state[subKey]
+	if !ok {
+		return false, nil
+	}
+	level.Info(t.logger).Log("msg", "evicting hashring shard", "hashring", key, "shard", subKey)
+	// remove this shard
+	delete(state, subKey)
+	// check if we have any shards left
+	if len(state) == 0 {
+		level.Info(t.logger).Log("msg", "evicting hashring", "hashring", key)
+		// delete the hashring entirely if not
+		delete(t.state, key)
+	}
+	return true, nil
+}
+
 func (t *tracker) deepCopyState() map[cacheKey]ownerRefTracker {
 	t.mut.RLock()
 	defer t.mut.RUnlock()
