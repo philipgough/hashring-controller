@@ -47,11 +47,12 @@ type tracker struct {
 	logger log.Logger
 }
 
-func newTracker(ttl *time.Duration) *tracker {
+func newTracker(ttl *time.Duration, logger log.Logger) *tracker {
 	return &tracker{
-		ttl:   ttl,
-		state: make(map[cacheKey]ownerRefTracker),
-		now:   time.Now,
+		ttl:    ttl,
+		state:  make(map[cacheKey]ownerRefTracker),
+		now:    time.Now,
+		logger: logger,
 	}
 }
 
