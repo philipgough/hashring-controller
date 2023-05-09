@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/go-kit/log"
+	"github.com/go-kit/log/level"
 
 	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -52,6 +53,45 @@ func newTracker(ttl *time.Duration) *tracker {
 		state: make(map[cacheKey]ownerRefTracker),
 		now:   time.Now,
 	}
+}
+
+// toHashring converts an EndpointSlice into a hashring
+// It adds all ready endpoints to the hashring and sets the TTL if provided
+// It returns a list of terminating Pods to be considered for eviction
+func (t *tracker) toHashring(eps *discoveryv1.EndpointSlice) (*hashring, []string) {
+	var terminatingPods []string
+	var endpoints = make(map[string]*time.Time)
+
+	var ttl *time.Time
+	if t.ttl != nil {
+		newTTL := t.now().Add(*t.ttl)
+		ttl = &newTTL
+	}
+
+	for _, endpoint := range eps.Endpoints {
+		if endpoint.Hostname == nil {
+			level.Warn(t.logger).Log(
+				"msg", "EndpointSlice endpoint has no hostname - skipping", "endpoint", endpoint)
+			continue
+		}
+
+		if endpoint.Conditions.Terminating != nil && *endpoint.Conditions.Terminating == true {
+			// this is a voluntary disruption, so we should remove it from the hashring
+			// it might be an indication of a scale down event or rolling update etc
+			terminatingPods = append(terminatingPods, *endpoint.Hostname)
+			continue
+		}
+
+		// we only care about ready endpoints in terms of adding nodes to the hashring
+		if endpoint.Conditions.Ready != nil && *endpoint.Conditions.Ready == true {
+			endpoints[*endpoint.Hostname] = ttl
+		}
+	}
+
+	return &hashring{
+		tenants:   t.getTenants(eps),
+		endpoints: endpoints,
+	}, terminatingPods
 }
 
 func (t *tracker) generateCacheKey(eps *discoveryv1.EndpointSlice) (cacheKey, error) {
