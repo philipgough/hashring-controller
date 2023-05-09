@@ -55,6 +55,66 @@ func newTracker(ttl *time.Duration) *tracker {
 	}
 }
 
+func (t *tracker) deepCopyState() map[cacheKey]ownerRefTracker {
+	t.mut.RLock()
+	defer t.mut.RUnlock()
+
+	newState := make(map[cacheKey]ownerRefTracker, len(t.state))
+
+	for name, refTracker := range t.state {
+		newOwnerRefTracker := make(ownerRefTracker)
+		for subKey, hashringState := range refTracker {
+			newHashring := &hashring{
+				tenants:   append([]string(nil), hashringState.tenants...),
+				endpoints: make(map[string]*time.Time, len(hashringState.endpoints)),
+			}
+			for endpoint, expiry := range hashringState.endpoints {
+				var newExpiry *time.Time
+				if expiry != nil {
+					newExpiry = new(time.Time)
+					*newExpiry = *expiry
+				}
+				newHashring.endpoints[endpoint] = newExpiry
+			}
+			newOwnerRefTracker[subKey] = newHashring
+		}
+		newState[name] = newOwnerRefTracker
+	}
+
+	return newState
+}
+
+func (t *tracker) setState(key cacheKey, subKey ownerRefUID, value *hashring) {
+	t.mut.Lock()
+	defer t.mut.Unlock()
+	if _, ok := t.state[key]; !ok {
+		t.state[key] = make(map[ownerRefUID]*hashring)
+	}
+
+	t.state[key][subKey] = value
+}
+
+// saveInPlace returns true if the state for this key/subKey should be saved in place
+// This is true if the TTL is nil or if the state for this key/subKey does not exist
+func (t *tracker) saveInPlace(key cacheKey, subKey ownerRefUID) bool {
+	if t.ttl == nil {
+		return true
+	}
+	return !t.hasStateForSubKey(key, subKey)
+}
+
+func (t *tracker) hasStateForSubKey(key cacheKey, subKey ownerRefUID) bool {
+	t.mut.RLock()
+	defer t.mut.RUnlock()
+	if _, ok := t.state[key]; !ok {
+		return false
+	}
+	if _, ok := t.state[key][subKey]; !ok {
+		return false
+	}
+	return true
+}
+
 // toHashring converts an EndpointSlice into a hashring
 // It adds all ready endpoints to the hashring and sets the TTL if provided
 // It returns a list of terminating Pods to be considered for eviction
