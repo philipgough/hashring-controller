@@ -1,10 +1,15 @@
 package controller
 
 import (
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/go-kit/log"
+
+	discoveryv1 "k8s.io/api/discovery/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // cacheKey is the cache key and the name of the hashring
@@ -47,4 +52,56 @@ func newTracker(ttl *time.Duration) *tracker {
 		state: make(map[cacheKey]ownerRefTracker),
 		now:   time.Now,
 	}
+}
+
+func (t *tracker) generateCacheKey(eps *discoveryv1.EndpointSlice) (cacheKey, error) {
+	key, ok := eps.GetLabels()[discoveryv1.LabelServiceName]
+	if !ok || key == "" {
+		return "", fmt.Errorf("EndpointSlice %s/%s does not have a %s label",
+			eps.Namespace, eps.Name, discoveryv1.LabelServiceName)
+	}
+
+	name, ok := t.getHashringName(eps)
+	if !ok || name == "" {
+		name = key
+	}
+
+	return cacheKey(fmt.Sprintf("%s/%s", name, key)), nil
+}
+
+// unwrapCacheKey returns the hashring name and the name of the service
+func (t *tracker) unwrapCacheKey(key cacheKey) (string, string) {
+	parts := strings.Split(string(key), "/")
+	if len(parts) == 1 {
+		return parts[0], parts[0]
+	}
+	return parts[0], parts[1]
+}
+
+func (t *tracker) getHashringName(eps *discoveryv1.EndpointSlice) (string, bool) {
+	name, ok := eps.GetLabels()[HashringNameIdentifierLabel]
+	return name, ok
+}
+
+func (t *tracker) getTenants(eps *discoveryv1.EndpointSlice) []string {
+	tenant, ok := eps.GetLabels()[TenantIdentifierLabel]
+	if !ok {
+		return []string{}
+	}
+	return []string{tenant}
+}
+
+func (t *tracker) toSubKey(eps *discoveryv1.EndpointSlice) ownerRefUID {
+	return ownerRefUID(fmt.Sprintf("%s/%s", eps.Name, eps.UID))
+}
+
+func (t *tracker) fromSubKey(subKey ownerRefUID) (name string, uid types.UID) {
+	parts := strings.Split(string(subKey), "/")
+	if len(parts) != 2 {
+		// log error
+		return name, uid
+	}
+	name = parts[0]
+	uid = types.UID(parts[1])
+	return name, uid
 }
