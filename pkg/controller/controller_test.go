@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/go-kit/log"
-
 	"github.com/philipgough/hashring-controller/pkg/config"
+	"github.com/prometheus/client_golang/prometheus"
 
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -253,6 +253,7 @@ func (f *fixture) newController(ctx context.Context) (*Controller, informers.Sha
 		metav1.NamespaceDefault,
 		nil,
 		log.NewNopLogger(),
+		prometheus.NewRegistry(),
 	)
 
 	if f.cache != nil {
