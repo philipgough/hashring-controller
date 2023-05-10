@@ -9,8 +9,8 @@ import (
 
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
-
 	"github.com/philipgough/hashring-controller/pkg/config"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"golang.org/x/time/rate"
 
@@ -100,6 +100,7 @@ type Controller struct {
 	// buildFQDN is a function that builds a FQDN from a hostname and a service name
 	buildFQDN func(hostname, serviceName string) string
 	logger    log.Logger
+	metrics   *metrics
 }
 
 // Options provides a source to override default controller behaviour
@@ -119,11 +120,21 @@ func NewController(
 	namespace string,
 	opts *Options,
 	logger log.Logger,
+	registry *prometheus.Registry,
 ) *Controller {
 	if opts == nil {
 		opts = &Options{
 			TTL: nil,
 		}
+	}
+
+	if logger == nil {
+		logger = log.NewNopLogger()
+	}
+
+	ctrlMetrics := newMetrics()
+	if registry == nil {
+		registry.MustRegister(ctrlMetrics.configMapHash, ctrlMetrics.configMapLastChangeSuccessTime)
 	}
 
 	c := &Controller{
@@ -145,6 +156,7 @@ func NewController(
 		namespace:        namespace,
 		tracker:          newTracker(opts.TTL, log.With(logger, "component", "endpointslice_tracker")),
 		logger:           logger,
+		metrics:          ctrlMetrics,
 	}
 
 	c.buildFQDN = c.defaultBuildFQDN
@@ -340,6 +352,8 @@ func (c *Controller) reconcile(ctx context.Context) error {
 		return err
 	}
 
+	c.metrics.configMapLastChangeSuccessTime.Set(float64(time.Now().Unix()))
+	c.metrics.configMapLastChangeSuccessTime.Set(hashAsMetricValue(hashringConfig))
 	return nil
 }
 
