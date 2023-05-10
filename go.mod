@@ -3,6 +3,7 @@ module github.com/philipgough/hashring-controller
 go 1.20
 
 require (
+	github.com/go-kit/kit v0.9.0
 	github.com/go-kit/log v0.2.1
 	github.com/oklog/run v1.1.0
 	github.com/prometheus/client_golang v1.14.0
