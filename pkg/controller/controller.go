@@ -38,7 +38,7 @@ const (
 	// TenantIdentifierLabel is an optional label that is used by the controller to identify a tenant for the hashring
 	// When relying on default behaviour for the controller, the absence of this label
 	// on a Service will result in an empty tenant list which matches all tenants providing soft-tenancy
-	TenantIdentifierLabel = "hashring.controller.io/tenants"
+	TenantIdentifierLabel = "hashring.controller.io/tenant"
 	// AlgorithmIdentifierLabel is the label that is used by the controller to identify the hashring algorithm
 	// When relying on default behaviour for the controller, the absence of this label
 	// on a Service will result in the use of config.DefaultAlgorithm
