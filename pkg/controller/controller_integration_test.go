@@ -301,7 +301,7 @@ func pollUntilExpectConfigurationOrTimeout(t *testing.T, ctx context.Context, ns
 			return false, nil
 		}
 
-		if cm.Data[configMapKey] != expect {
+		if cm.Data[DefaultConfigMapKey] != expect {
 			return false, nil
 		}
 
