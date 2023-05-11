@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"k8s.io/utils/pointer"
 	"sort"
 	"time"
 
@@ -49,8 +50,8 @@ const (
 	// ConfigMapLabel is the label that is used to identify configmaps that is managed by the controller
 	ConfigMapLabel = "hashring.controller.io/managed"
 
-	// configMapKey is the default key for the generated ConfigMap
-	configMapKey         = "hashring.json"
+	// DefaultConfigMapKey is the default key for the generated ConfigMap
+	DefaultConfigMapKey  = "hashring.json"
 	defaultPort          = "10901"
 	defaultClusterDomain = "cluster.local"
 
@@ -95,6 +96,12 @@ type Controller struct {
 
 	// configMapName is the name of the configmap that the controller will generate
 	configMapName string
+	// configMapKey is the key of the configmap that the controller will generate
+	configMapKey string
+	// port is the port that the controller will generate a hashring for
+	port string
+	// clusterDomain is the cluster domain that the controller will generate a hashring for
+	clusterDomain string
 	// namespace is the namespace of the configmap that the controller will generate
 	namespace string
 	// buildFQDN is a function that builds a FQDN from a hostname and a service name
@@ -110,6 +117,14 @@ type Options struct {
 	// Only Endpoints that have become unready due to an involuntary disruption are cached
 	// Terminated Endpoints are removed from the hashring in all cases
 	TTL *time.Duration
+	// ConfigMapKey is the key for hashring config on the generated ConfigMap
+	ConfigMapKey *string
+	// ConfigMapName is the name of the generated ConfigMap
+	ConfigMapName *string
+	// Port is the port that the hashring will be generated for
+	Port *string
+	// ClusterDomain is the cluster domain that the hashring will be generated for
+	ClusterDomain *string
 }
 
 func NewController(
@@ -122,11 +137,7 @@ func NewController(
 	logger log.Logger,
 	registry *prometheus.Registry,
 ) *Controller {
-	if opts == nil {
-		opts = &Options{
-			TTL: nil,
-		}
-	}
+	opts = buildOpts(opts)
 
 	if logger == nil {
 		logger = log.NewNopLogger()
@@ -139,7 +150,10 @@ func NewController(
 
 	c := &Controller{
 		client:        client,
-		configMapName: DefaultConfigMapName,
+		configMapName: *opts.ConfigMapName,
+		configMapKey:  *opts.ConfigMapKey,
+		port:          *opts.Port,
+		clusterDomain: *opts.ClusterDomain,
 		// This is similar to the DefaultControllerRateLimiter, just with a
 		// significantly higher default backoff (1s vs 5ms). A more significant
 		// rate limit back off here helps ensure that the Controller does not
@@ -340,7 +354,7 @@ func (c *Controller) reconcile(ctx context.Context) error {
 		return err
 	}
 
-	if cm.Data[configMapKey] != string(hashringConfig) {
+	if cm.Data[DefaultConfigMapKey] != string(hashringConfig) {
 		_, err = c.client.CoreV1().ConfigMaps(c.namespace).Update(
 			ctx, c.newConfigMap(string(hashringConfig), owners), metav1.UpdateOptions{})
 	}
@@ -403,7 +417,7 @@ func (c *Controller) newConfigMap(data string, owners []metav1.OwnerReference) *
 			OwnerReferences: owners,
 		},
 		Data: map[string]string{
-			configMapKey: data,
+			DefaultConfigMapKey: data,
 		},
 		BinaryData: nil,
 	}
@@ -551,4 +565,32 @@ func (c *Controller) shouldEnqueue(eps *discoveryv1.EndpointSlice) bool {
 		return false
 	}
 	return true
+}
+
+func buildOpts(o *Options) *Options {
+	if o == nil {
+		o = &Options{
+			TTL:           nil,
+			ConfigMapName: pointer.String(DefaultConfigMapName),
+			ConfigMapKey:  pointer.String(DefaultConfigMapKey),
+			Port:          pointer.String(defaultPort),
+			ClusterDomain: pointer.String(defaultClusterDomain),
+		}
+		return o
+	}
+
+	if o.ConfigMapName == nil {
+		o.ConfigMapName = pointer.String(DefaultConfigMapName)
+	}
+	if o.ConfigMapKey == nil {
+		o.ConfigMapKey = pointer.String(DefaultConfigMapKey)
+	}
+	if o.Port == nil {
+		o.Port = pointer.String(defaultPort)
+	}
+	if o.ClusterDomain == nil {
+		o.ClusterDomain = pointer.String(defaultClusterDomain)
+	}
+
+	return o
 }

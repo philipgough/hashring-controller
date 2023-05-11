@@ -61,6 +61,7 @@ func main() {
 	logger := log.NewLogfmtLogger(log.NewSyncWriter(os.Stderr))
 	logger = log.WithPrefix(logger, "ts", log.DefaultTimestampUTC)
 	logger = log.WithPrefix(logger, "caller", log.DefaultCaller)
+	logger = log.With(logger, "component", "hashring-controller")
 
 	r := prometheus.NewRegistry()
 	r.MustRegister(
