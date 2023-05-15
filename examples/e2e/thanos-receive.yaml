@@ -1,0 +1,211 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sync-controller
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: sync-controller
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    verbs:
+      - list
+      - watch
+      - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sync-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: sync-controller
+subjects:
+  - kind: ServiceAccount
+    name: sync-controller
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: thanos-receive-hashring
+  labels:
+    app: thanos-receive
+spec:
+  selector:
+    app: thanos-receive
+  clusterIP: None
+  ipFamilies:
+    - IPv4
+  ports:
+    - name: grpc
+      protocol: TCP
+      port: 10901
+      targetPort: 10901
+  internalTrafficPolicy: Cluster
+  clusterIPs:
+    - None
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: thanos-receive
+  labels:
+    app: thanos-receive
+spec:
+  selector:
+    app: thanos-receive
+  ports:
+    - name: grpc
+      protocol: TCP
+      port: 10901
+      targetPort: 10901
+    - name: http
+      protocol: TCP
+      port: 10902
+      targetPort: 10902
+    - name: remote-write
+      protocol: TCP
+      port: 19291
+      targetPort: 19291
+  internalTrafficPolicy: Cluster
+
+---
+kind: StatefulSet
+apiVersion: apps/v1
+metadata:
+  name: thanos-receive
+spec:
+  selector:
+    matchLabels:
+      app: thanos-receive
+  serviceName: thanos-receive-hashring
+  replicas: 3
+  minReadySeconds: 60
+  template:
+    metadata:
+      labels:
+        app: thanos-receive
+    spec:
+      serviceAccountName: sync-controller
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 900
+      containers:
+        - name: sync-controller
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          env:
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+          ports:
+            - containerPort: 8080
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: FallbackToLogsOnError
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: hashring-config
+              mountPath: /var/lib/thanos-receive
+          image: quay.io/philipgough/hashring-controller:latest
+          lifecycle:
+            postStart:
+              exec:
+                command: [ "sync-controller", "--namespace=$(NAMESPACE)", "--wait=true" ]
+          command:
+            - sync-controller
+          args:
+            - '--namespace=$(NAMESPACE)'
+        - readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 10902
+              scheme: HTTP
+            initialDelaySeconds: 60
+            timeoutSeconds: 1
+            periodSeconds: 30
+            successThreshold: 1
+            failureThreshold: 20
+          terminationMessagePath: /dev/termination-log
+          name: thanos-receive
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: 10902
+              scheme: HTTP
+            timeoutSeconds: 1
+            periodSeconds: 30
+            successThreshold: 1
+            failureThreshold: 8
+          env:
+            - name: NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+          ports:
+            - name: grpc
+              containerPort: 10901
+              protocol: TCP
+            - name: http
+              containerPort: 10902
+              protocol: TCP
+            - name: remote-write
+              containerPort: 19291
+              protocol: TCP
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+            - name: data
+              mountPath: /var/thanos/receive
+            - name: hashring-config
+              mountPath: /var/lib/thanos-receive
+          terminationMessagePolicy: FallbackToLogsOnError
+          image: 'quay.io/thanos/thanos:v0.30.2'
+          args:
+            - receive
+            - '--log.level=info'
+            - '--log.format=logfmt'
+            - '--grpc-address=0.0.0.0:10901'
+            - '--http-address=0.0.0.0:10902'
+            - '--remote-write.address=0.0.0.0:19291'
+            - '--receive.replication-factor=3'
+            - '--tsdb.path=/var/thanos/receive'
+            - '--label=replica="$(NAME)"'
+            - '--label=receive="true"'
+            - >-
+              --receive.local-endpoint=$(NAME).thanos-hashring.$(NAMESPACE).svc.cluster.local:10901
+            - '--receive.hashrings-file=/var/lib/thanos-receive/hashrings.json'
+            - '--receive.hashrings-algorithm=ketama'
+      volumes:
+        - name: hashring-config
+          emptyDir: {}
+        - name: data
+          emptyDir: {}
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate

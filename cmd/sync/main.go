@@ -30,7 +30,7 @@ const (
 
 	resyncPeriod       = time.Minute
 	defaultWaitForSync = false
-	defaultPath        = "/var/lib/thanos-receive/hashring.json"
+	defaultPath        = "/var/lib/thanos-receive/hashrings.json"
 )
 
 var (
