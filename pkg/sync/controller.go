@@ -8,7 +8,6 @@ import (
 
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
-	"github.com/philipgough/hashring-controller/pkg/controller"
 	"github.com/prometheus/client_golang/prometheus"
 
 	"golang.org/x/time/rate"
@@ -22,14 +21,9 @@ import (
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
-	"k8s.io/utils/pointer"
 )
 
 const (
-	defaultPath = "/var/lib/thanos-receive/hashring.json"
-	// configMapKey is the default key for the generated ConfigMap
-	configMapKey = controller.DefaultConfigMapKey
-
 	// defaultSyncBackOff is the default backoff period for syncService calls.
 	defaultSyncBackOff = 1 * time.Second
 	// maxSyncBackOff is the max backoff period for sync calls.
@@ -67,11 +61,11 @@ type Controller struct {
 
 type Options struct {
 	// ConfigMapKey is the key for hashring config on the generated ConfigMap
-	ConfigMapKey *string
+	ConfigMapKey string
 	// ConfigMapName is the name of the generated ConfigMap
-	ConfigMapName *string
-	// FilePath is the path to the hashring.json file
-	FilePath *string
+	ConfigMapName string
+	// FilePath is the path to which the data gets written
+	FilePath string
 }
 
 func NewController(
@@ -81,8 +75,8 @@ func NewController(
 	namespace string,
 	logger log.Logger,
 	registry *prometheus.Registry,
-	opts *Options,
-) *Controller {
+	opts Options,
+) (*Controller, error) {
 
 	if logger == nil {
 		logger = log.NewNopLogger()
@@ -93,11 +87,15 @@ func NewController(
 		registry.MustRegister(ctrlMetrics.configMapHash, ctrlMetrics.configMapLastWriteSuccessTime)
 	}
 
-	opts = buildOpts(opts)
+	if err := opts.valid(); err != nil {
+		return nil, err
+	}
 
 	c := &Controller{
 		client:        client,
-		configMapName: *opts.ConfigMapName,
+		configMapName: opts.ConfigMapName,
+		path:          opts.FilePath,
+		key:           opts.ConfigMapKey,
 		// This is similar to the DefaultControllerRateLimiter, just with a
 		// significantly higher default backoff (1s vs 5ms). A more significant
 		// rate limit back off here helps ensure that the Controller does not
@@ -114,8 +112,6 @@ func NewController(
 		namespace:        namespace,
 		logger:           logger,
 		metrics:          ctrlMetrics,
-		path:             *opts.FilePath,
-		key:              *opts.ConfigMapKey,
 	}
 
 	configMapInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
@@ -127,7 +123,7 @@ func NewController(
 	c.configMapLister = configMapInformer.Lister()
 	c.configMapSynced = configMapInformer.Informer().HasSynced
 
-	return c
+	return c, nil
 }
 
 // Run will set up the event handlers for types we are interested in, as well
@@ -303,28 +299,35 @@ func (c *Controller) onConfigMapDelete(obj interface{}) {
 }
 
 func (c *Controller) shouldEnqueue(cm *corev1.ConfigMap) bool {
-	if value, ok := cm.GetLabels()[controller.ConfigMapLabel]; !ok || value != "true" {
-		return false
-	}
 	return true
 }
 
-func buildOpts(o *Options) *Options {
-	if o == nil {
-		o = &Options{
-			ConfigMapName: pointer.String(controller.DefaultConfigMapName),
-			ConfigMapKey:  pointer.String(controller.DefaultConfigMapKey),
-			FilePath:      pointer.String(defaultPath),
+func (o Options) valid() error {
+	if o.FilePath == "" {
+		return fmt.Errorf("filepath cannot be empty")
+	}
+	if o.ConfigMapName == "" {
+		return fmt.Errorf("configmap name cannot be empty")
+	}
+	if o.ConfigMapKey == "" {
+		return fmt.Errorf("configmap key cannot be empty")
+	}
+	return nil
+}
+
+// WaitForFileToSync waits for the file to be synced to disk.
+func (c *Controller) WaitForFileToSync(ctx context.Context) error {
+	var pollError error
+	err := wait.PollUntilContextTimeout(ctx, 5*time.Second, time.Minute, false, func(ctx context.Context) (bool, error) {
+		if _, err := os.Stat(c.path); err != nil {
+			pollError = fmt.Errorf("failed to stat file: %w", err)
+			return false, nil
 		}
+		return true, nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to wait for file to sync: %w: %w", err, pollError)
 	}
-	if o.ConfigMapName == nil {
-		o.ConfigMapName = pointer.String(controller.DefaultConfigMapName)
-	}
-	if o.ConfigMapKey == nil {
-		o.ConfigMapKey = pointer.String(controller.DefaultConfigMapKey)
-	}
-	if o.FilePath == nil {
-		o.FilePath = pointer.String(defaultPath)
-	}
-	return o
+
+	return nil
 }

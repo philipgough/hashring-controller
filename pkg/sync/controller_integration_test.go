@@ -21,7 +21,6 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
-	"k8s.io/utils/pointer"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
@@ -100,19 +99,22 @@ func runController(t *testing.T, ctx context.Context, cfg *rest.Config, namespac
 		}),
 	)
 
-	controller := NewController(
+	controller, err := NewController(
 		ctx,
 		configMapInformer.Core().V1().ConfigMaps(),
 		kubeClient,
 		namespace,
 		log.NewNopLogger(),
 		prometheus.NewRegistry(),
-		&Options{
-			ConfigMapKey:  nil,
-			ConfigMapName: nil,
-			FilePath:      pointer.String(filePath),
+		Options{
+			ConfigMapKey:  controller.DefaultConfigMapKey,
+			ConfigMapName: controller.DefaultConfigMapName,
+			FilePath:      filePath,
 		},
 	)
+	if err != nil {
+		t.Fatal(err, "Error creating controller")
+	}
 
 	configMapInformer.Start(ctx.Done())
 	go func() {
