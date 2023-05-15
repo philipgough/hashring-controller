@@ -29,10 +29,10 @@ FROM cgr.dev/chainguard/static:latest
 
 COPY --from=builder /etc/passwd /etc/passwd
 USER nonroot
-
+WORKDIR /usr/local/bin
 COPY --from=builder /usr/local/bin/hashring-controller .
 COPY --from=builder /usr/local/bin/sync-controller .
 
 
-ENTRYPOINT ["./hashring-controller"]
+ENTRYPOINT ["hashring-controller"]
 
