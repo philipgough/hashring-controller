@@ -20,7 +20,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	kubeinformers "k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
@@ -29,15 +28,22 @@ import (
 const (
 	defaultListen = ":8080"
 
-	resyncPeriod = time.Minute
+	resyncPeriod       = time.Minute
+	defaultWaitForSync = false
+	defaultPath        = "/var/lib/thanos-receive/hashring.json"
 )
 
 var (
 	masterURL  string
 	kubeconfig string
-	namespace  string
+
+	namespace     string
+	configMapName string
+	configMapKey  string
+	pathToWrite   string
 
 	listen string
+	wait   bool
 )
 
 func main() {
@@ -52,11 +58,6 @@ func main() {
 	kubeClient, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		stdlog.Fatalf("error building kubernetes clientset: %s", err.Error())
-	}
-
-	l, err := net.Listen("tcp", defaultListen)
-	if err != nil {
-		stdlog.Fatalf("error listening on %s: %s", defaultListen, err.Error())
 	}
 
 	logger := log.NewLogfmtLogger(log.NewSyncWriter(os.Stderr))
@@ -78,20 +79,42 @@ func main() {
 		resyncPeriod,
 		kubeinformers.WithNamespace(namespace),
 		kubeinformers.WithTweakListOptions(func(options *metav1.ListOptions) {
-			options.LabelSelector = labels.Set{controller.ConfigMapLabel: "true"}.String()
+			options.FieldSelector = fmt.Sprintf("metadata.name=%s", configMapName)
 		}),
 	)
 
-	// todo expose config as flags
-	controller := sync.NewController(
+	controller, err := sync.NewController(
 		ctx,
 		configMapInformer.Core().V1().ConfigMaps(),
 		kubeClient,
 		namespace,
 		logger,
 		r,
-		nil,
+		sync.Options{
+			ConfigMapKey:  configMapKey,
+			ConfigMapName: configMapName,
+			FilePath:      pathToWrite,
+		},
 	)
+	if err != nil {
+		stdlog.Fatalf("failed to create new controller: %s", err.Error())
+	}
+
+	// if wait is set then we want to leverage a postStart hook to ensure contents on disk
+	// in order to ensure Thanos starts correctly. We can exit early in any case.
+	// todo this might be better handled as a subcommand
+	if wait {
+		if err := controller.WaitForFileToSync(ctx); err != nil {
+			level.Error(logger).Log("msg", "failed to wait for file to sync to disk", "err", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
+	l, err := net.Listen("tcp", defaultListen)
+	if err != nil {
+		stdlog.Fatalf("error listening on %s: %s", defaultListen, err.Error())
+	}
 
 	var g run.Group
 	{
@@ -130,6 +153,14 @@ func main() {
 func init() {
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "Path to a kubeconfig. Only required if out-of-cluster.")
 	flag.StringVar(&masterURL, "master", "", "The address of the Kubernetes API server. Overrides any value in kubeconfig. Only required if out-of-cluster.")
-	flag.StringVar(&namespace, "namespace", metav1.NamespaceDefault, "The namespace to watch")
 	flag.StringVar(&listen, "listen", defaultListen, "The address to listen on")
+
+	flag.StringVar(&namespace, "namespace", metav1.NamespaceDefault, "The namespace to watch")
+	flag.StringVar(&configMapName, "name", controller.DefaultConfigMapName, "The ConfigMap to read")
+	flag.StringVar(&configMapKey, "key", controller.DefaultConfigMapKey, "The ConfigMap key to read")
+	flag.StringVar(&pathToWrite, "path", defaultPath, "The path to write to")
+
+	// the wait flag can be used as a lifecycle hook to ensure criteria is met before starting other applications
+	// todo - this might make more sense as a time.Duration or sub-command
+	flag.BoolVar(&wait, "wait", defaultWaitForSync, "Should wait for sync. Exits when done or context times out")
 }
