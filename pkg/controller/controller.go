@@ -51,7 +51,7 @@ const (
 	ConfigMapLabel = "hashring.controller.io/managed"
 
 	// DefaultConfigMapKey is the default key for the generated ConfigMap
-	DefaultConfigMapKey  = "hashring.json"
+	DefaultConfigMapKey  = "hashrings.json"
 	defaultPort          = "10901"
 	defaultClusterDomain = "cluster.local"
 
@@ -205,6 +205,28 @@ func NewController(
 	return c
 }
 
+// EnsureConfigMapExists ensures that the controller's configmap exists or tries to create it with an empty hashring
+func (c *Controller) EnsureConfigMapExists(ctx context.Context) error {
+	var pollError error
+	err := wait.PollUntilContextTimeout(ctx, 5*time.Second, time.Minute, false, func(ctx context.Context) (bool, error) {
+		_, err := c.client.CoreV1().ConfigMaps(c.namespace).Get(ctx, c.configMapName, metav1.GetOptions{})
+		if err != nil {
+			if errors.IsNotFound(err) {
+				_, pollError = c.client.CoreV1().ConfigMaps(c.namespace).Create(
+					ctx, c.newConfigMap(`[{"hashring":"default","endpoints":[],"tenants":[]}]`, nil), metav1.CreateOptions{})
+				return false, nil
+			}
+		}
+
+		return true, nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to ensure configmap exists: %w: %w", err, pollError)
+	}
+
+	return nil
+}
+
 // Run will set up the event handlers for types we are interested in, as well
 // as syncing informer caches and starting workers. It will block until stopCh
 // is closed, at which point it will shutdown the queue and wait for
@@ -354,7 +376,7 @@ func (c *Controller) reconcile(ctx context.Context) error {
 		return err
 	}
 
-	if cm.Data[DefaultConfigMapKey] != string(hashringConfig) {
+	if cm.Data[c.configMapKey] != string(hashringConfig) {
 		_, err = c.client.CoreV1().ConfigMaps(c.namespace).Update(
 			ctx, c.newConfigMap(string(hashringConfig), owners), metav1.UpdateOptions{})
 	}

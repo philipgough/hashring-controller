@@ -101,6 +101,11 @@ func main() {
 		r,
 	)
 
+	// todo protect this with a flag
+	if err := controller.EnsureConfigMapExists(ctx); err != nil {
+		stdlog.Fatalf("error ensuring configmap exists: %s", err.Error())
+	}
+
 	var g run.Group
 	{
 		g.Add(func() error {
